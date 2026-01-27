@@ -25,21 +25,29 @@ def strip_accents(s: str) -> str:
     )
 
 def sort_key_spanish(s: str) -> str:
-    # minúsculas + sin acentos para orden
     return strip_accents(s).lower()
 
 def safe_sheet_title(name, existing):
-    # Excel no permite : \ / ? * [ ] y máx 31 caracteres
+    """
+    - Excel no permite : \ / ? * [ ]
+    - Máximo 31 caracteres
+    - Evita duplicados
+    """
     name = re.sub(r'[:\\/?*\[\]]', ' ', str(name)).strip()
     if not name:
         name = "Hoja"
+
+    # recorte preventivo a 31
     name = name[:31]
     base = name
     i = 1
+
     while name in existing:
         suffix = f"_{i}"
+        # asegurar que base+suffix no exceda 31
         name = (base[:31 - len(suffix)] + suffix)
         i += 1
+
     return name
 
 def find_base_sheet(workbook):
@@ -119,8 +127,11 @@ def procesar(base_bytes: bytes) -> bytes:
     for reg in registros:
         ws = wb_out.copy_worksheet(tmpl)
 
-        sheet_name = f'{reg["rut"]}_{reg["ap1"]}_{reg["ap2"]}_{reg["nom"]}'
-        ws.title = safe_sheet_title(sheet_name, set(wb_out.sheetnames))
+        # Nombre de pestaña corto (evita warning >31):
+        # APELLIDO1_APELLIDO2_RUT
+        sheet_name_raw = f'{reg["ap1"]}_{reg["ap2"]}_{reg["rut"]}'
+        # safe_sheet_title recorta + desduplica
+        ws.title = safe_sheet_title(sheet_name_raw, set(wb_out.sheetnames))
 
         # pegar fila completa en la fila buffer 160
         for c, val in enumerate(reg["row_values"], start=1):
