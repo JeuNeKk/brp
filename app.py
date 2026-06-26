@@ -10,7 +10,6 @@ from openpyxl.worksheet.page import PageMargins
 
 APP_TITLE = "BRP: Excel imprimible por docente"
 TEMPLATE_PATH = "plantilla.xlsx"
-DATA_ROW = 160
 PRINT_AREA = "A162:C193"
 
 
@@ -83,6 +82,78 @@ def find_base_sheet(workbook):
     return None, None
 
 
+def num(value):
+    if value in (None, ""):
+        return 0
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(str(value).replace(".", "").replace(",", "."))
+    except Exception:
+        return 0
+
+
+def fill_print_values(ws, data):
+    def v(name):
+        return data.get(normalize(name), "")
+
+    subv_titulo = num(v("Subvención título"))
+    trans_titulo = num(v("Transferencia directa título"))
+
+    subv_mencion = num(v("Subvención mención"))
+    trans_mencion = num(v("Transferencia directa mención"))
+
+    total_tramo = num(v("Total tramo"))
+    asign_prioritarios = num(v("Asignación directa alumnos prioritarios"))
+
+    values_b = {
+        162: v("Rbd (Establecimiento)"),
+        163: v("RUT (Docente)"),
+        164: v("Nombres (Docente)"),
+        165: v("Primer Apellido (Docente)"),
+        166: v("Segundo Apellido (Docente)"),
+        167: v("Bienios"),
+        168: v("Tramo"),
+        169: v("Carrera docente"),
+        170: v("Derecho a pago asignación de tramo"),
+        171: v("Derecho a prioritario"),
+        172: v("Horas de contrato"),
+        173: v("Total días trabajados o descontados"),
+        174: v("Subvención título"),
+        175: v("Transferencia directa título"),
+        176: v("Subvención mención"),
+        177: v("Transferencia directa mención"),
+        178: v("Total subvención reconocimiento profesional"),
+        179: v("Total transferencia directa reconocimiento"),
+        180: v("Total reconocimiento profesional"),
+        181: v("Subvención tramo"),
+        182: v("Transferencia directa tramo"),
+        183: v("Total tramo"),
+        184: v("Asignación directa alumnos prioritarios"),
+        185: v("Total subvenciones"),
+        186: v("Total transferencia directa"),
+        187: v("Total Asignación por Desem Dificil"),
+        188: v("A pagar docente desempeño difícil"),
+        189: v("Período"),
+        190: v("Tipo de pago"),
+        191: v("Mes"),
+        192: v("Año"),
+        193: v("Porcentaje Alumnos Prioritarios"),
+    }
+
+    values_c = {
+        162: "VALORES",
+        175: subv_titulo + trans_titulo,
+        177: subv_mencion + trans_mencion,
+        183: total_tramo,
+        184: asign_prioritarios,
+    }
+
+    for row in range(162, 194):
+        ws.cell(row, 2).value = values_b.get(row, "")
+        ws.cell(row, 3).value = values_c.get(row, "")
+
+
 def procesar(base_bytes):
     wb_base = openpyxl.load_workbook(io.BytesIO(base_bytes), data_only=False)
     ws_base, col = find_base_sheet(wb_base)
@@ -94,11 +165,10 @@ def procesar(base_bytes):
         )
 
     rut_col = col.get("rut (docente)")
-    nom_col = col.get("nombres (docente)")
     ap1_col = col.get("primer apellido (docente)")
     ap2_col = col.get("segundo apellido (docente)")
+    nom_col = col.get("nombres (docente)")
 
-    n_cols = ws_base.max_column
     registros = []
 
     for r in range(2, ws_base.max_row + 1):
@@ -107,15 +177,16 @@ def procesar(base_bytes):
         if rut in (None, ""):
             continue
 
+        data = {}
+        for header, c in col.items():
+            data[header] = ws_base.cell(r, c).value
+
         registros.append({
             "rut": rut,
             "ap1": ws_base.cell(r, ap1_col).value if ap1_col else "",
             "ap2": ws_base.cell(r, ap2_col).value if ap2_col else "",
             "nom": ws_base.cell(r, nom_col).value if nom_col else "",
-            "row_values": [
-                ws_base.cell(r, c).value
-                for c in range(1, n_cols + 1)
-            ]
+            "data": data
         })
 
     if not registros:
@@ -136,9 +207,6 @@ def procesar(base_bytes):
     wb_out = openpyxl.Workbook()
     wb_out.remove(wb_out.active)
 
-    wb_out.calculation.fullCalcOnLoad = True
-    wb_out.calculation.calcMode = "auto"
-
     progress = st.progress(0)
 
     for idx, reg in enumerate(registros, start=1):
@@ -149,7 +217,6 @@ def procesar(base_bytes):
             )
         )
 
-        # Copiar solo el bloque necesario: A162:C193
         for row in range(162, 194):
             for col_num in range(1, 4):
                 copy_cell(
@@ -157,29 +224,23 @@ def procesar(base_bytes):
                     ws.cell(row, col_num)
                 )
 
-        # Copiar anchos A:C
         for col_num in range(1, 4):
             letter = get_column_letter(col_num)
             ws.column_dimensions[letter].width = (
                 ws_template.column_dimensions[letter].width
             )
 
-        # Copiar alturas 162:193
         for row in range(162, 194):
             ws.row_dimensions[row].height = (
                 ws_template.row_dimensions[row].height
             )
 
-        # Pegar datos en fila buffer 160
-        for c, val in enumerate(reg["row_values"], start=1):
-            ws.cell(DATA_ROW, c).value = val
+        fill_print_values(ws, reg["data"])
 
-        # Ocultar fila buffer y filas superiores
         for rr in range(1, 162):
             ws.row_dimensions[rr].hidden = True
 
-        # Ocultar columnas desde D en adelante
-        for cc in range(4, max(n_cols, 40) + 1):
+        for cc in range(4, 40):
             ws.column_dimensions[get_column_letter(cc)].hidden = True
 
         ws.print_area = PRINT_AREA
@@ -187,6 +248,7 @@ def procesar(base_bytes):
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 1
         ws.page_setup.paperSize = 9
+
         ws.page_margins = PageMargins(
             left=0.25,
             right=0.25,
