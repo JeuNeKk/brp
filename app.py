@@ -1,7 +1,6 @@
 import io
 import re
 import unicodedata
-from copy import copy
 
 import streamlit as st
 import openpyxl
@@ -10,6 +9,7 @@ from openpyxl.worksheet.page import PageMargins
 
 APP_TITLE = "BRP: Excel imprimible por docente"
 TEMPLATE_PATH = "plantilla.xlsx"
+DATA_ROW = 160
 PRINT_AREA = "A162:C193"
 
 
@@ -50,21 +50,6 @@ def safe_sheet_title(name, existing):
     return title[:31]
 
 
-def copy_cell(src, dst):
-    dst.value = src.value
-
-    if src.has_style:
-        dst.font = copy(src.font)
-        dst.fill = copy(src.fill)
-        dst.border = copy(src.border)
-        dst.alignment = copy(src.alignment)
-        dst.number_format = src.number_format
-        dst.protection = copy(src.protection)
-
-    if src.comment:
-        dst.comment = copy(src.comment)
-
-
 def find_base_sheet(workbook):
     for ws in workbook.worksheets:
         headers = [
@@ -82,78 +67,6 @@ def find_base_sheet(workbook):
     return None, None
 
 
-def num(value):
-    if value in (None, ""):
-        return 0
-    if isinstance(value, (int, float)):
-        return value
-    try:
-        return float(str(value).replace(".", "").replace(",", "."))
-    except Exception:
-        return 0
-
-
-def fill_print_values(ws, data):
-    def v(name):
-        return data.get(normalize(name), "")
-
-    subv_titulo = num(v("Subvención título"))
-    trans_titulo = num(v("Transferencia directa título"))
-
-    subv_mencion = num(v("Subvención mención"))
-    trans_mencion = num(v("Transferencia directa mención"))
-
-    total_tramo = num(v("Total tramo"))
-    asign_prioritarios = num(v("Asignación directa alumnos prioritarios"))
-
-    values_b = {
-        162: v("Rbd (Establecimiento)"),
-        163: v("RUT (Docente)"),
-        164: v("Nombres (Docente)"),
-        165: v("Primer Apellido (Docente)"),
-        166: v("Segundo Apellido (Docente)"),
-        167: v("Bienios"),
-        168: v("Tramo"),
-        169: v("Carrera docente"),
-        170: v("Derecho a pago asignación de tramo"),
-        171: v("Derecho a prioritario"),
-        172: v("Horas de contrato"),
-        173: v("Total días trabajados o descontados"),
-        174: v("Subvención título"),
-        175: v("Transferencia directa título"),
-        176: v("Subvención mención"),
-        177: v("Transferencia directa mención"),
-        178: v("Total subvención reconocimiento profesional"),
-        179: v("Total transferencia directa reconocimiento"),
-        180: v("Total reconocimiento profesional"),
-        181: v("Subvención tramo"),
-        182: v("Transferencia directa tramo"),
-        183: v("Total tramo"),
-        184: v("Asignación directa alumnos prioritarios"),
-        185: v("Total subvenciones"),
-        186: v("Total transferencia directa"),
-        187: v("Total Asignación por Desem Dificil"),
-        188: v("A pagar docente desempeño difícil"),
-        189: v("Período"),
-        190: v("Tipo de pago"),
-        191: v("Mes"),
-        192: v("Año"),
-        193: v("Porcentaje Alumnos Prioritarios"),
-    }
-
-    values_c = {
-        162: "VALORES",
-        175: subv_titulo + trans_titulo,
-        177: subv_mencion + trans_mencion,
-        183: total_tramo,
-        184: asign_prioritarios,
-    }
-
-    for row in range(162, 194):
-        ws.cell(row, 2).value = values_b.get(row, "")
-        ws.cell(row, 3).value = values_c.get(row, "")
-
-
 def procesar(base_bytes):
     wb_base = openpyxl.load_workbook(io.BytesIO(base_bytes), data_only=False)
     ws_base, col = find_base_sheet(wb_base)
@@ -165,9 +78,14 @@ def procesar(base_bytes):
         )
 
     rut_col = col.get("rut (docente)")
+    nom_col = col.get("nombres (docente)")
     ap1_col = col.get("primer apellido (docente)")
     ap2_col = col.get("segundo apellido (docente)")
-    nom_col = col.get("nombres (docente)")
+
+    if not rut_col:
+        raise ValueError("Falta la columna 'RUT (Docente)'.")
+
+    n_cols = ws_base.max_column
 
     registros = []
 
@@ -177,21 +95,25 @@ def procesar(base_bytes):
         if rut in (None, ""):
             continue
 
-        data = {}
-        for header, c in col.items():
-            data[header] = ws_base.cell(r, c).value
+        ap1 = ws_base.cell(r, ap1_col).value if ap1_col else ""
+        ap2 = ws_base.cell(r, ap2_col).value if ap2_col else ""
+        nom = ws_base.cell(r, nom_col).value if nom_col else ""
 
         registros.append({
             "rut": rut,
-            "ap1": ws_base.cell(r, ap1_col).value if ap1_col else "",
-            "ap2": ws_base.cell(r, ap2_col).value if ap2_col else "",
-            "nom": ws_base.cell(r, nom_col).value if nom_col else "",
-            "data": data
+            "ap1": ap1,
+            "ap2": ap2,
+            "nom": nom,
+            "row_values": [
+                ws_base.cell(r, c).value
+                for c in range(1, n_cols + 1)
+            ]
         })
 
     if not registros:
         raise ValueError("El archivo no contiene registros con RUT.")
 
+    # Orden alfabético por apellido paterno
     registros.sort(
         key=lambda x: (
             sort_key(x["ap1"]),
@@ -201,47 +123,28 @@ def procesar(base_bytes):
         )
     )
 
-    wb_template = openpyxl.load_workbook(TEMPLATE_PATH, data_only=False)
-    ws_template = wb_template.active
+    wb_out = openpyxl.load_workbook(TEMPLATE_PATH, data_only=False)
+    tmpl = wb_out.active
+    tmpl.title = "_PLANTILLA"
 
-    wb_out = openpyxl.Workbook()
-    wb_out.remove(wb_out.active)
+    wb_out.calculation.fullCalcOnLoad = True
+    wb_out.calculation.forceFullCalc = True
+    wb_out.calculation.calcMode = "auto"
 
     progress = st.progress(0)
 
     for idx, reg in enumerate(registros, start=1):
-        ws = wb_out.create_sheet(
-            safe_sheet_title(
-                f'{reg["ap1"]}_{reg["ap2"]}_{reg["rut"]}',
-                set(wb_out.sheetnames)
-            )
+        ws = wb_out.copy_worksheet(tmpl)
+
+        ws.title = safe_sheet_title(
+            f'{reg["ap1"]}_{reg["ap2"]}_{reg["rut"]}',
+            set(wb_out.sheetnames)
         )
 
-        for row in range(162, 194):
-            for col_num in range(1, 4):
-                copy_cell(
-                    ws_template.cell(row, col_num),
-                    ws.cell(row, col_num)
-                )
-
-        for col_num in range(1, 4):
-            letter = get_column_letter(col_num)
-            ws.column_dimensions[letter].width = (
-                ws_template.column_dimensions[letter].width
-            )
-
-        for row in range(162, 194):
-            ws.row_dimensions[row].height = (
-                ws_template.row_dimensions[row].height
-            )
-
-        fill_print_values(ws, reg["data"])
-
-        for rr in range(1, 162):
-            ws.row_dimensions[rr].hidden = True
-
-        for cc in range(4, 40):
-            ws.column_dimensions[get_column_letter(cc)].hidden = True
+        # Esta es la lógica original correcta:
+        # pegar la fila completa del docente en la fila 160.
+        for c, val in enumerate(reg["row_values"], start=1):
+            ws.cell(DATA_ROW, c).value = val
 
         ws.print_area = PRINT_AREA
         ws.page_setup.orientation = "portrait"
@@ -258,12 +161,21 @@ def procesar(base_bytes):
             footer=0.3
         )
 
+        # Ocultar lo irrelevante, pero mantenerlo para que las fórmulas funcionen.
+        for rr in range(1, 162):
+            ws.row_dimensions[rr].hidden = True
+
+        for cc in range(4, ws.max_column + 1):
+            ws.column_dimensions[get_column_letter(cc)].hidden = True
+
         ws.sheet_view.showGridLines = False
         ws.sheet_view.selection[0].activeCell = "A162"
         ws.sheet_view.selection[0].sqref = "A162"
         ws.sheet_view.topLeftCell = "A162"
 
         progress.progress(idx / len(registros))
+
+    wb_out.remove(tmpl)
 
     output = io.BytesIO()
     wb_out.save(output)
@@ -295,7 +207,9 @@ if uploaded:
             try:
                 result_bytes, total = procesar(uploaded.getvalue())
 
-                st.success(f"Archivo generado correctamente. Docentes procesados: {total}")
+                st.success(
+                    f"Archivo generado correctamente. Docentes procesados: {total}"
+                )
 
                 st.download_button(
                     label="⬇️ Descargar BRP_imprimible.xlsx",
