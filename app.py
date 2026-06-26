@@ -28,7 +28,7 @@ def sort_key(text):
     return strip_accents(text).lower()
 
 
-def clean_text(text):
+def clean_sheet_name(text):
     text = "" if text is None else str(text).strip()
     text = re.sub(r'[:\\/?*\[\]]', " ", text)
     text = re.sub(r"\s+", " ", text)
@@ -36,21 +36,21 @@ def clean_text(text):
 
 
 def safe_sheet_title(name, existing):
-    name = clean_text(name)
+    name = clean_sheet_name(name)
 
     if not name:
         name = "Hoja"
 
     base = name[:31]
-    final = base
+    title = base
     i = 1
 
-    while final in existing:
+    while title in existing:
         suffix = f"_{i}"
-        final = base[:31 - len(suffix)] + suffix
+        title = base[:31 - len(suffix)] + suffix
         i += 1
 
-    return final[:31]
+    return title[:31]
 
 
 def find_base_sheet(workbook):
@@ -70,7 +70,7 @@ def find_base_sheet(workbook):
     return None, None
 
 
-def procesar(base_bytes: bytes) -> bytes:
+def procesar(base_bytes):
     wb_base = openpyxl.load_workbook(io.BytesIO(base_bytes), data_only=False)
 
     ws_base, col = find_base_sheet(wb_base)
@@ -90,7 +90,6 @@ def procesar(base_bytes: bytes) -> bytes:
         raise ValueError("Falta la columna 'RUT (Docente)'.")
 
     n_cols = ws_base.max_column
-
     registros = []
 
     for r in range(2, ws_base.max_row + 1):
@@ -127,8 +126,6 @@ def procesar(base_bytes: bytes) -> bytes:
     )
 
     wb_out = openpyxl.load_workbook(TEMPLATE_PATH, data_only=False)
-
-    # Evita problemas si la hoja plantilla tiene nombre largo
     tmpl = wb_out.active
     tmpl.title = "_PLANTILLA"
 
@@ -180,6 +177,7 @@ def procesar(base_bytes: bytes) -> bytes:
 
 
 st.set_page_config(page_title=APP_TITLE, page_icon="🧾")
+
 st.title("🧾 " + APP_TITLE)
 
 st.markdown("""
