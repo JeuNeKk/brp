@@ -1,6 +1,8 @@
 import io
 import re
+import zipfile
 import unicodedata
+import xml.etree.ElementTree as ET
 
 import streamlit as st
 import openpyxl
@@ -21,8 +23,7 @@ def normalize(text):
 def strip_accents(text):
     text = "" if text is None else str(text).strip()
     return "".join(
-        c
-        for c in unicodedata.normalize("NFKD", text)
+        c for c in unicodedata.normalize("NFKD", text)
         if not unicodedata.combining(c)
     )
 
@@ -52,70 +53,155 @@ def safe_sheet_title(name, existing):
     return title[:31]
 
 
-def find_base_sheet(workbook):
-    for ws in workbook.worksheets:
-        headers = [
-            normalize(ws.cell(1, c).value)
-            for c in range(1, ws.max_column + 1)
-        ]
+def col_letters_to_number(cell_ref):
+    letters = re.sub(r"[^A-Z]", "", cell_ref.upper())
+    number = 0
+    for ch in letters:
+        number = number * 26 + (ord(ch) - ord("A") + 1)
+    return number
 
-        if "rut (docente)" in headers:
-            return ws, {
-                headers[i]: i + 1
-                for i in range(len(headers))
-                if headers[i]
-            }
 
-    return None, None
+def read_shared_strings(zf):
+    path = "xl/sharedStrings.xml"
+    if path not in zf.namelist():
+        return []
+
+    root = ET.fromstring(zf.read(path))
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+
+    strings = []
+    for si in root.findall("a:si", ns):
+        texts = []
+        for t in si.findall(".//a:t", ns):
+            texts.append(t.text or "")
+        strings.append("".join(texts))
+
+    return strings
+
+
+def get_first_sheet_path(zf):
+    workbook_xml = ET.fromstring(zf.read("xl/workbook.xml"))
+    rels_xml = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+
+    ns_main = {
+        "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    }
+    ns_rel = {
+        "rel": "http://schemas.openxmlformats.org/package/2006/relationships"
+    }
+
+    first_sheet = workbook_xml.find("a:sheets/a:sheet", ns_main)
+    rel_id = first_sheet.attrib[
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    ]
+
+    for rel in rels_xml.findall("rel:Relationship", ns_rel):
+        if rel.attrib.get("Id") == rel_id:
+            target = rel.attrib.get("Target")
+            if target.startswith("/"):
+                return target.lstrip("/")
+            return "xl/" + target.lstrip("/")
+
+    raise ValueError("No se pudo encontrar la hoja principal del archivo.")
+
+
+def read_xlsx_values(base_bytes):
+    """
+    Lee valores desde el archivo .xlsx sin cargar estilos.
+    Esto evita errores de openpyxl con formatos internos defectuosos.
+    """
+    rows = []
+
+    with zipfile.ZipFile(io.BytesIO(base_bytes)) as zf:
+        shared_strings = read_shared_strings(zf)
+        sheet_path = get_first_sheet_path(zf)
+
+        root = ET.fromstring(zf.read(sheet_path))
+        ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+
+        for row in root.findall(".//a:sheetData/a:row", ns):
+            values = {}
+
+            for cell in row.findall("a:c", ns):
+                cell_ref = cell.attrib.get("r", "")
+                col_num = col_letters_to_number(cell_ref)
+                cell_type = cell.attrib.get("t")
+                value_node = cell.find("a:v", ns)
+
+                value = ""
+
+                if value_node is not None:
+                    raw_value = value_node.text or ""
+
+                    if cell_type == "s":
+                        idx = int(raw_value)
+                        value = shared_strings[idx] if idx < len(shared_strings) else ""
+                    else:
+                        value = raw_value
+
+                # inline strings
+                if cell_type == "inlineStr":
+                    text_node = cell.find(".//a:t", ns)
+                    value = text_node.text if text_node is not None else ""
+
+                values[col_num] = value
+
+            if values:
+                max_col = max(values.keys())
+                rows.append([values.get(c, "") for c in range(1, max_col + 1)])
+
+    return rows
 
 
 def leer_registros(base_bytes):
-    wb_base = openpyxl.load_workbook(io.BytesIO(base_bytes), data_only=False)
-    ws_base, col = find_base_sheet(wb_base)
+    rows = read_xlsx_values(base_bytes)
 
-    if ws_base is None:
+    if not rows:
+        raise ValueError("El archivo está vacío o no pudo leerse.")
+
+    headers = [normalize(h) for h in rows[0]]
+    col = {headers[i]: i for i in range(len(headers)) if headers[i]}
+
+    if "rut (docente)" not in col:
         raise ValueError(
             "No se encontró la columna 'RUT (Docente)'. "
             "Suba el archivo BRP mensual correcto."
         )
 
-    rut_col = col.get("rut (docente)")
-    nom_col = col.get("nombres (docente)")
-    ap1_col = col.get("primer apellido (docente)")
-    ap2_col = col.get("segundo apellido (docente)")
-    rbd_col = col.get("rbd (establecimiento)")
-    periodo_col = col.get("período") or col.get("periodo")
-    mes_col = col.get("mes")
-    anio_col = col.get("año") or col.get("ano")
+    rut_idx = col.get("rut (docente)")
+    nom_idx = col.get("nombres (docente)")
+    ap1_idx = col.get("primer apellido (docente)")
+    ap2_idx = col.get("segundo apellido (docente)")
+    rbd_idx = col.get("rbd (establecimiento)")
+    periodo_idx = col.get("período") or col.get("periodo")
+    mes_idx = col.get("mes")
+    anio_idx = col.get("año") or col.get("ano")
 
-    if not rut_col:
-        raise ValueError("Falta la columna 'RUT (Docente)'.")
-
-    n_cols = ws_base.max_column
     registros = []
     rbd_detectado = ""
     periodo_detectado = ""
 
-    for r in range(2, ws_base.max_row + 1):
-        rut = ws_base.cell(r, rut_col).value
+    for row in rows[1:]:
+        rut = row[rut_idx] if rut_idx < len(row) else ""
 
         if rut in (None, ""):
             continue
 
-        if not rbd_detectado and rbd_col:
-            rbd_detectado = ws_base.cell(r, rbd_col).value or ""
+        if not rbd_detectado and rbd_idx is not None and rbd_idx < len(row):
+            rbd_detectado = row[rbd_idx] or ""
 
         if not periodo_detectado:
-            if periodo_col:
-                periodo_detectado = ws_base.cell(r, periodo_col).value or ""
-            elif mes_col and anio_col:
-                mes = ws_base.cell(r, mes_col).value or ""
-                anio = ws_base.cell(r, anio_col).value or ""
+            if periodo_idx is not None and periodo_idx < len(row):
+                periodo_detectado = row[periodo_idx] or ""
+            elif mes_idx is not None and anio_idx is not None:
+                mes = row[mes_idx] if mes_idx < len(row) else ""
+                anio = row[anio_idx] if anio_idx < len(row) else ""
                 periodo_detectado = f"{mes} {anio}".strip()
 
-        ap1 = ws_base.cell(r, ap1_col).value if ap1_col else ""
-        ap2 = ws_base.cell(r, ap2_col).value if ap2_col else ""
-        nom = ws_base.cell(r, nom_col).value if nom_col else ""
+        ap1 = row[ap1_idx] if ap1_idx is not None and ap1_idx < len(row) else ""
+        ap2 = row[ap2_idx] if ap2_idx is not None and ap2_idx < len(row) else ""
+        nom = row[nom_idx] if nom_idx is not None and nom_idx < len(row) else ""
 
         registros.append(
             {
@@ -123,10 +209,7 @@ def leer_registros(base_bytes):
                 "ap1": ap1,
                 "ap2": ap2,
                 "nom": nom,
-                "row_values": [
-                    ws_base.cell(r, c).value
-                    for c in range(1, n_cols + 1)
-                ],
+                "row_values": row,
             }
         )
 
@@ -172,8 +255,6 @@ def procesar(base_bytes):
             set(wb_out.sheetnames),
         )
 
-        # Lógica original correcta:
-        # pegar la fila completa del docente en la fila 160.
         for c, val in enumerate(reg["row_values"], start=1):
             ws.cell(DATA_ROW, c).value = val
 
@@ -219,7 +300,7 @@ st.set_page_config(page_title=APP_TITLE, page_icon="🧾")
 st.title("🧾 " + APP_TITLE)
 
 st.markdown(
-    '''
+    """
 **Instrucciones:**
 
 1. Descargue el archivo BRP mensual.
@@ -230,7 +311,7 @@ st.markdown(
 ✅ **Orden de impresión:** Apellido paterno A → Z.
 
 ⚠️ Si el archivo tiene más de 300 registros, será bloqueado porque probablemente corresponde a un histórico y no al mes actual.
-'''
+"""
 )
 
 uploaded = st.file_uploader("Sube el Excel mensual (.xlsx)", type=["xlsx"])
