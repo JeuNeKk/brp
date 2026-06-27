@@ -21,7 +21,8 @@ def normalize(text):
 def strip_accents(text):
     text = "" if text is None else str(text).strip()
     return "".join(
-        c for c in unicodedata.normalize("NFKD", text)
+        c
+        for c in unicodedata.normalize("NFKD", text)
         if not unicodedata.combining(c)
     )
 
@@ -99,16 +100,17 @@ def procesar(base_bytes):
         ap2 = ws_base.cell(r, ap2_col).value if ap2_col else ""
         nom = ws_base.cell(r, nom_col).value if nom_col else ""
 
-        registros.append({
-            "rut": rut,
-            "ap1": ap1,
-            "ap2": ap2,
-            "nom": nom,
-            "row_values": [
-                ws_base.cell(r, c).value
-                for c in range(1, n_cols + 1)
-            ]
-        })
+        registros.append(
+            {
+                "rut": rut,
+                "ap1": ap1,
+                "ap2": ap2,
+                "nom": nom,
+                "row_values": [
+                    ws_base.cell(r, c).value for c in range(1, n_cols + 1)
+                ],
+            }
+        )
 
     if not registros:
         raise ValueError("El archivo no contiene registros con RUT.")
@@ -125,7 +127,7 @@ def procesar(base_bytes):
             sort_key(x["ap1"]),
             sort_key(x["ap2"]),
             sort_key(x["nom"]),
-            str(x["rut"]).strip()
+            str(x["rut"]).strip(),
         )
     )
 
@@ -143,7 +145,7 @@ def procesar(base_bytes):
 
         ws.title = safe_sheet_title(
             f'{reg["ap1"]}_{reg["ap2"]}_{reg["rut"]}',
-            set(wb_out.sheetnames)
+            set(wb_out.sheetnames),
         )
 
         for c, val in enumerate(reg["row_values"], start=1):
@@ -161,7 +163,7 @@ def procesar(base_bytes):
             top=0.5,
             bottom=0.5,
             header=0.3,
-            footer=0.3
+            footer=0.3,
         )
 
         for rr in range(1, 162):
@@ -187,10 +189,10 @@ def procesar(base_bytes):
 
 
 st.set_page_config(page_title=APP_TITLE, page_icon="🧾")
-
 st.title("🧾 " + APP_TITLE)
 
-st.markdown("""
+st.markdown(
+    """
 **Instrucciones:**
 
 1. Descargue el archivo BRP mensual.
@@ -199,8 +201,9 @@ st.markdown("""
 
 ✅ **Orden de impresión:** Apellido paterno A → Z.
 
-⚠️ El sistema bloqueará archivos con más de 300 registros, porque probablemente corresponden a un histórico y no al mes actual.
-""")
+⚠️ Si el archivo tiene más de 300 registros, será bloqueado porque probablemente corresponde a un histórico y no al mes actual.
+"""
+)
 
 uploaded = st.file_uploader("Sube el Excel mensual (.xlsx)", type=["xlsx"])
 
@@ -220,7 +223,10 @@ if uploaded:
                     label="⬇️ Descargar BRP_imprimible.xlsx",
                     data=result_bytes,
                     file_name="BRP_imprimible.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
                 )
 
             except Exception as e:
