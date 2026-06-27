@@ -131,7 +131,6 @@ def procesar(base_bytes):
 
     wb_out = openpyxl.load_workbook(TEMPLATE_PATH, data_only=False)
     tmpl = wb_out.active
-    tmpl.title = "_PLANTILLA"
 
     wb_out.calculation.fullCalcOnLoad = True
     wb_out.calculation.forceFullCalc = True
