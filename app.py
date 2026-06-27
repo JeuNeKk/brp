@@ -21,7 +21,8 @@ def normalize(text):
 def strip_accents(text):
     text = "" if text is None else str(text).strip()
     return "".join(
-        c for c in unicodedata.normalize("NFKD", text)
+        c
+        for c in unicodedata.normalize("NFKD", text)
         if not unicodedata.combining(c)
     )
 
@@ -92,7 +93,6 @@ def leer_registros(base_bytes):
 
     n_cols = ws_base.max_column
     registros = []
-
     rbd_detectado = ""
     periodo_detectado = ""
 
@@ -124,7 +124,8 @@ def leer_registros(base_bytes):
                 "ap2": ap2,
                 "nom": nom,
                 "row_values": [
-                    ws_base.cell(r, c).value for c in range(1, n_cols + 1)
+                    ws_base.cell(r, c).value
+                    for c in range(1, n_cols + 1)
                 ],
             }
         )
@@ -171,6 +172,8 @@ def procesar(base_bytes):
             set(wb_out.sheetnames),
         )
 
+        # Lógica original correcta:
+        # pegar la fila completa del docente en la fila 160.
         for c, val in enumerate(reg["row_values"], start=1):
             ws.cell(DATA_ROW, c).value = val
 
@@ -216,7 +219,7 @@ st.set_page_config(page_title=APP_TITLE, page_icon="🧾")
 st.title("🧾 " + APP_TITLE)
 
 st.markdown(
-    """
+    '''
 **Instrucciones:**
 
 1. Descargue el archivo BRP mensual.
@@ -225,7 +228,9 @@ st.markdown(
 4. Descargue el Excel final listo para imprimir.
 
 ✅ **Orden de impresión:** Apellido paterno A → Z.
-"""
+
+⚠️ Si el archivo tiene más de 300 registros, será bloqueado porque probablemente corresponde a un histórico y no al mes actual.
+'''
 )
 
 uploaded = st.file_uploader("Sube el Excel mensual (.xlsx)", type=["xlsx"])
