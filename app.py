@@ -21,8 +21,7 @@ def normalize(text):
 def strip_accents(text):
     text = "" if text is None else str(text).strip()
     return "".join(
-        c
-        for c in unicodedata.normalize("NFKD", text)
+        c for c in unicodedata.normalize("NFKD", text)
         if not unicodedata.combining(c)
     )
 
@@ -69,7 +68,7 @@ def find_base_sheet(workbook):
     return None, None
 
 
-def procesar(base_bytes):
+def leer_registros(base_bytes):
     wb_base = openpyxl.load_workbook(io.BytesIO(base_bytes), data_only=False)
     ws_base, col = find_base_sheet(wb_base)
 
@@ -83,6 +82,10 @@ def procesar(base_bytes):
     nom_col = col.get("nombres (docente)")
     ap1_col = col.get("primer apellido (docente)")
     ap2_col = col.get("segundo apellido (docente)")
+    rbd_col = col.get("rbd (establecimiento)")
+    periodo_col = col.get("período") or col.get("periodo")
+    mes_col = col.get("mes")
+    anio_col = col.get("año") or col.get("ano")
 
     if not rut_col:
         raise ValueError("Falta la columna 'RUT (Docente)'.")
@@ -90,11 +93,25 @@ def procesar(base_bytes):
     n_cols = ws_base.max_column
     registros = []
 
+    rbd_detectado = ""
+    periodo_detectado = ""
+
     for r in range(2, ws_base.max_row + 1):
         rut = ws_base.cell(r, rut_col).value
 
         if rut in (None, ""):
             continue
+
+        if not rbd_detectado and rbd_col:
+            rbd_detectado = ws_base.cell(r, rbd_col).value or ""
+
+        if not periodo_detectado:
+            if periodo_col:
+                periodo_detectado = ws_base.cell(r, periodo_col).value or ""
+            elif mes_col and anio_col:
+                mes = ws_base.cell(r, mes_col).value or ""
+                anio = ws_base.cell(r, anio_col).value or ""
+                periodo_detectado = f"{mes} {anio}".strip()
 
         ap1 = ws_base.cell(r, ap1_col).value if ap1_col else ""
         ap2 = ws_base.cell(r, ap2_col).value if ap2_col else ""
@@ -115,13 +132,6 @@ def procesar(base_bytes):
     if not registros:
         raise ValueError("El archivo no contiene registros con RUT.")
 
-    if len(registros) > MAX_REGISTROS:
-        raise ValueError(
-            f"Se detectaron {len(registros)} registros. "
-            "Este archivo parece ser histórico y no mensual. "
-            "Por favor suba el archivo BRP mensual correcto."
-        )
-
     registros.sort(
         key=lambda x: (
             sort_key(x["ap1"]),
@@ -130,6 +140,19 @@ def procesar(base_bytes):
             str(x["rut"]).strip(),
         )
     )
+
+    return registros, rbd_detectado, periodo_detectado
+
+
+def procesar(base_bytes):
+    registros, _, _ = leer_registros(base_bytes)
+
+    if len(registros) > MAX_REGISTROS:
+        raise ValueError(
+            f"Se detectaron {len(registros)} registros. "
+            "Este archivo parece ser histórico y no mensual. "
+            "Por favor suba el archivo BRP mensual correcto."
+        )
 
     wb_out = openpyxl.load_workbook(TEMPLATE_PATH, data_only=False)
     tmpl = wb_out.active
@@ -189,6 +212,7 @@ def procesar(base_bytes):
 
 
 st.set_page_config(page_title=APP_TITLE, page_icon="🧾")
+
 st.title("🧾 " + APP_TITLE)
 
 st.markdown(
@@ -197,37 +221,58 @@ st.markdown(
 
 1. Descargue el archivo BRP mensual.
 2. Súbalo aquí sin modificarlo.
-3. Descargue el Excel final listo para imprimir.
+3. Revise que el período y cantidad de docentes sean correctos.
+4. Descargue el Excel final listo para imprimir.
 
 ✅ **Orden de impresión:** Apellido paterno A → Z.
-
-⚠️ Si el archivo tiene más de 300 registros, será bloqueado porque probablemente corresponde a un histórico y no al mes actual.
 """
 )
 
 uploaded = st.file_uploader("Sube el Excel mensual (.xlsx)", type=["xlsx"])
 
 if uploaded:
-    st.success("Archivo cargado correctamente.")
+    try:
+        file_bytes = uploaded.getvalue()
+        registros_preview, rbd, periodo = leer_registros(file_bytes)
+        total_preview = len(registros_preview)
 
-    if st.button("Generar Excel imprimible"):
-        with st.spinner("Generando archivo..."):
-            try:
-                result_bytes, total = procesar(uploaded.getvalue())
+        st.success("Archivo cargado correctamente.")
 
-                st.success(
-                    f"Archivo generado correctamente. Docentes procesados: {total}"
-                )
+        col1, col2, col3 = st.columns(3)
+        col1.metric("RBD detectado", rbd if rbd else "No detectado")
+        col2.metric("Período", periodo if periodo else "No detectado")
+        col3.metric("Docentes encontrados", total_preview)
 
-                st.download_button(
-                    label="⬇️ Descargar BRP_imprimible.xlsx",
-                    data=result_bytes,
-                    file_name="BRP_imprimible.xlsx",
-                    mime=(
-                        "application/vnd.openxmlformats-officedocument."
-                        "spreadsheetml.sheet"
-                    ),
-                )
+        if total_preview > MAX_REGISTROS:
+            st.error(
+                f"Se detectaron {total_preview} registros. "
+                "Este archivo parece ser histórico y no mensual. "
+                "Por seguridad, no se generará el Excel."
+            )
+        else:
+            st.info("Revise los datos detectados. Si son correctos, genere el Excel.")
 
-            except Exception as e:
-                st.error(f"Error: {e}")
+            if st.button("Generar Excel imprimible"):
+                with st.spinner("Generando archivo..."):
+                    try:
+                        result_bytes, total = procesar(file_bytes)
+
+                        st.success(
+                            f"Archivo generado correctamente. Docentes procesados: {total}"
+                        )
+
+                        st.download_button(
+                            label="⬇️ Descargar BRP_imprimible.xlsx",
+                            data=result_bytes,
+                            file_name="BRP_imprimible.xlsx",
+                            mime=(
+                                "application/vnd.openxmlformats-officedocument."
+                                "spreadsheetml.sheet"
+                            ),
+                        )
+
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+    except Exception as e:
+        st.error(f"Error: {e}")
